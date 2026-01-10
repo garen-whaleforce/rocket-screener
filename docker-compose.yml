@@ -1,0 +1,45 @@
+# Rocket Screener - Docker Compose
+# v10 Deployment Configuration
+
+version: "3.8"
+
+services:
+  rocket-screener:
+    build: .
+    container_name: rocket-screener
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Taipei
+    # For cron execution, use external cron or orchestrator
+    # Default command runs once
+    command: python -m app.run
+
+  # Optional: cron scheduler service
+  cron:
+    build: .
+    container_name: rocket-screener-cron
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Taipei
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "0 8 * * 1-5 cd /app && python -m app.run >> /app/logs/cron.log 2>&1" > /etc/crontabs/root
+        echo "Cron scheduled: 08:00 Taiwan time (Mon-Fri)"
+        crond -f -l 2
+    profiles:
+      - cron  # Only starts with: docker-compose --profile cron up
+
+networks:
+  default:
+    name: rocket-screener-net

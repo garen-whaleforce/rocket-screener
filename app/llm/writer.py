@@ -283,6 +283,31 @@ def render_article2(evidence: Article2Evidence) -> str:
                 f"| {emoji} {case.scenario.title()} | {case.assumption} | ${case.target_price:,.0f} | {case.upside_pct:+.1f}% |"
             )
 
+    # Management Signals section (v5)
+    if evidence.management_signals:
+        ms = evidence.management_signals
+        lines.extend([
+            "",
+            "---",
+            "",
+            "## 管理層訊號",
+            "",
+        ])
+        if ms.get("quarter"):
+            lines.append(f"**最近財報電話會議**：{ms['quarter']}")
+        if ms.get("outlook_tone"):
+            tone_display = {"bullish": "樂觀", "neutral": "中性", "cautious": "保守"}.get(
+                ms["outlook_tone"], ms["outlook_tone"]
+            )
+            lines.append(f"- 管理層語氣：{tone_display}")
+        if ms.get("key_topics"):
+            lines.append(f"- 主要話題：{', '.join(ms['key_topics'][:5])}")
+        if ms.get("risks_mentioned"):
+            lines.append(f"- 提及風險：{', '.join(ms['risks_mentioned'][:3])}")
+        if ms.get("guidance_mentioned"):
+            lines.append("- 有提及前瞻指引")
+        lines.append("")
+
     lines.extend([
         "",
         "---",

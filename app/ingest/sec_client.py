@@ -44,6 +44,7 @@ class SECEvent:
     description: str
     url: str
     importance: str  # high, medium, low
+    summary: Optional[str] = None  # LLM-generated summary
 
 
 class SECClient:
@@ -234,3 +235,123 @@ def get_sec_events_for_universe(
             logger.warning(f"Failed to get SEC events for {ticker}: {e}")
 
     return all_events
+
+
+def fetch_filing_text(filing_url: str, max_chars: int = 10000) -> Optional[str]:
+    """Fetch filing text content for summarization.
+
+    Args:
+        filing_url: URL to the SEC filing document
+        max_chars: Maximum characters to fetch
+
+    Returns:
+        Text content of the filing, or None if failed
+    """
+    try:
+        headers = {"User-Agent": "RocketScreener research@example.com"}
+        response = requests.get(filing_url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        content = response.text
+        # Clean HTML if present
+        if "<html" in content.lower():
+            import re
+            # Remove HTML tags
+            content = re.sub(r'<[^>]+>', ' ', content)
+            # Remove extra whitespace
+            content = re.sub(r'\s+', ' ', content)
+
+        return content[:max_chars]
+    except Exception as e:
+        logger.warning(f"Failed to fetch filing content: {e}")
+        return None
+
+
+def summarize_filing_with_llm(
+    filing: SECFiling,
+    ticker: str,
+    llm_client=None,
+) -> Optional[str]:
+    """Generate LLM summary of SEC filing.
+
+    Args:
+        filing: SEC filing metadata
+        ticker: Stock ticker
+        llm_client: LLM client (optional, will get default if None)
+
+    Returns:
+        Summary string, or None if failed
+    """
+    if llm_client is None:
+        try:
+            from app.llm.client import get_llm_client
+            llm_client = get_llm_client()
+        except Exception:
+            return None
+
+    if not llm_client:
+        return None
+
+    # Fetch filing content
+    content = fetch_filing_text(filing.filing_url, max_chars=8000)
+    if not content:
+        return None
+
+    form_type = filing.form_type.upper()
+
+    prompt = f"""請簡要摘要以下 {ticker} 的 SEC {form_type} 文件重點（50字以內，中文回答）：
+
+{content[:6000]}
+
+摘要："""
+
+    try:
+        summary = llm_client.generate(prompt=prompt, max_tokens=100, temperature=0.3)
+        return summary.strip()[:200]  # Safety limit
+    except Exception as e:
+        logger.warning(f"Failed to summarize filing: {e}")
+        return None
+
+
+def enhance_events_with_summaries(
+    events: list[SECEvent],
+    max_events: int = 3,
+) -> list[SECEvent]:
+    """Add LLM summaries to high-importance SEC events.
+
+    Args:
+        events: List of SEC events
+        max_events: Maximum events to summarize (for rate limiting)
+
+    Returns:
+        Events with summaries added
+    """
+    try:
+        from app.llm.client import get_llm_client
+        llm_client = get_llm_client()
+    except Exception:
+        return events
+
+    if not llm_client:
+        return events
+
+    # Only summarize high importance events
+    high_importance = [e for e in events if e.importance == "high"][:max_events]
+
+    for event in high_importance:
+        if event.form_type in ("8-K", "10-K", "10-Q"):
+            content = fetch_filing_text(event.url, max_chars=6000)
+            if content:
+                prompt = f"""請簡要摘要 {event.ticker} 的 {event.form_type} 文件重點（30字以內，中文）：
+
+{content[:4000]}
+
+摘要："""
+                try:
+                    summary = llm_client.generate(prompt=prompt, max_tokens=80, temperature=0.3)
+                    event.summary = summary.strip()[:100]
+                    logger.info(f"Added summary to {event.ticker} {event.form_type}")
+                except Exception as e:
+                    logger.warning(f"Failed to summarize {event.ticker} {event.form_type}: {e}")
+
+    return events

@@ -14,12 +14,15 @@ markdown>=3.5.0
 # Data processing (v2+)
 pandas>=2.0.0
 
-# Chart generation (v4+)
+# Chart generation (v4, v8)
 matplotlib>=3.8.0
-# pillow>=10.0.0
+pillow>=10.0.0
 
-# HTTP client (alternative to requests)
-# httpx>=0.25.0
+# LLM client (v3+)
+openai>=1.0.0
+
+# S3/MinIO client (v7)
+boto3>=1.34.0
 
 # Template rendering
 jinja2>=3.1.0

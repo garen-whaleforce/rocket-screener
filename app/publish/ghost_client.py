@@ -30,6 +30,7 @@ class Post:
     feature_image: Optional[str] = None
     tags: Optional[list[str]] = None
     excerpt: Optional[str] = None
+    visibility: str = "public"  # public, members, paid, tiers
     # Ghost post ID (set after creation/fetch)
     id: Optional[str] = None
 
@@ -140,6 +141,7 @@ class GhostClient:
             "slug": post.slug,
             "html": post.html,
             "status": post.status,
+            "visibility": post.visibility,
         }
 
         if post.feature_image:
@@ -149,8 +151,11 @@ class GhostClient:
         if post.excerpt:
             post_data["excerpt"] = post.excerpt
 
+        # Required: source=html to tell Ghost to convert HTML to Lexical
+        # See: https://forum.ghost.org/t/cannot-post-html/56536
+        params = {"source": "html"}
+
         # Newsletter parameters (only for article 1)
-        params = {}
         if newsletter_slug:
             params["newsletter"] = newsletter_slug
             if email_segment:
@@ -200,6 +205,7 @@ class GhostClient:
             "slug": post.slug,
             "html": post.html,
             "status": post.status,
+            "visibility": post.visibility,
             "updated_at": updated_at,
         }
 
@@ -210,7 +216,8 @@ class GhostClient:
         if post.excerpt:
             post_data["excerpt"] = post.excerpt
 
-        params = {}
+        # Required: source=html to tell Ghost to convert HTML to Lexical
+        params = {"source": "html"}
         if newsletter_slug:
             params["newsletter"] = newsletter_slug
             if email_segment:

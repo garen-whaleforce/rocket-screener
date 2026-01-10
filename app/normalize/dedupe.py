@@ -109,13 +109,15 @@ def deduplicate_news(
 
         if not merged:
             # Create new event
+            # Handle tickers being a list or potentially other types
+            tickers = list(item.tickers) if item.tickers else []
             events.append(
                 DeduplicatedEvent(
                     headline=item.title,
                     text=item.text,
                     source_urls=[item.url],
                     sources=[item.site],
-                    tickers=item.tickers.copy(),
+                    tickers=tickers,
                     published_date=item.published_date.isoformat(),
                     original_items=[item],
                 )

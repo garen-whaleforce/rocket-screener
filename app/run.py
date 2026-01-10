@@ -61,7 +61,12 @@ def parse_args() -> argparse.Namespace:
     group.add_argument(
         "--publish",
         action="store_true",
-        help="Generate and publish articles to Ghost",
+        help="Generate and publish articles to Ghost as drafts (default)",
+    )
+    group.add_argument(
+        "--publish-live",
+        action="store_true",
+        help="Generate, publish and send newsletter (Article 1 only)",
     )
 
     parser.add_argument(
@@ -140,8 +145,8 @@ def generate_article1_with_fmp(
     scored = score_events(events, price_changes)
     top_events = select_top_events(scored, min_count=5, max_count=8)
 
-    # Build evidence pack
-    evidence = build_article1_evidence(target_date, fmp, top_events)
+    # Build evidence pack with LLM analysis
+    evidence = build_article1_evidence(target_date, fmp, top_events, price_changes)
 
     # Render article
     markdown = render_article1(evidence)
@@ -311,8 +316,158 @@ NVIDIA（輝達）是全球領先的 GPU 與 AI 運算平台公司。
     )
 
 
+def generate_article2_with_fmp(
+    target_date: date,
+    fmp_config: FMPConfig,
+    scored_events: list,
+    price_changes: dict[str, float],
+    ghost_config=None,
+) -> ArticleContent:
+    """Generate Article 2 using FMP data and hot stock scoring."""
+    from app.evidence.build_article2 import build_article2_evidence
+    from app.features.hot_stock_scoring import score_hot_stocks
+    from app.features.valuation_chart import generate_valuation_chart_from_evidence
+    from app.ingest.fmp_client import FMPClient
+    from app.llm.writer import render_article2
+
+    logger.info("生成文章 2：熱門股深度分析...")
+
+    fmp = FMPClient(fmp_config)
+
+    # Build news ticker counts from scored events
+    news_ticker_counts = {}
+    for ev in scored_events:
+        for ticker in ev.event.tickers:
+            news_ticker_counts[ticker] = news_ticker_counts.get(ticker, 0) + 1
+
+    # Get universe
+    try:
+        sp500 = set(fmp.get_sp500_constituents())
+        universe = SEED_UNIVERSE | sp500
+    except Exception:
+        universe = SEED_UNIVERSE
+
+    # Score and select hot stock
+    hot_stocks = score_hot_stocks(fmp, universe, news_ticker_counts)
+    if not hot_stocks:
+        logger.warning("無熱門股可選，使用預設")
+        return generate_placeholder_article2(target_date)
+
+    selected = hot_stocks[0]
+    logger.info(f"選中熱門股: {selected.ticker} (score: {selected.score:.2f})")
+
+    # Build evidence pack with transcript config if available
+    from app.config import load_config as get_app_config
+
+    app_config = get_app_config()
+    transcript_config = app_config.transcript if app_config else None
+    evidence = build_article2_evidence(target_date, fmp, selected, transcript_config)
+
+    # Generate valuation chart (v4)
+    chart_path = None
+    chart_url = None
+    try:
+        output_dir = Path("out") / "charts" / target_date.strftime("%Y-%m-%d")
+        chart_path = generate_valuation_chart_from_evidence(evidence, output_dir)
+        if chart_path:
+            logger.info(f"估值圖已生成: {chart_path}")
+            # Upload to Ghost if config available
+            if ghost_config:
+                try:
+                    from app.publish.ghost_client import GhostClient
+
+                    ghost = GhostClient(ghost_config)
+                    chart_url = ghost.upload_image(chart_path)
+                    evidence.valuation_chart_url = chart_url
+                    logger.info(f"估值圖已上傳: {chart_url}")
+                except Exception as e:
+                    logger.warning(f"估值圖上傳失敗: {e}")
+    except Exception as e:
+        logger.warning(f"估值圖生成失敗: {e}")
+
+    # Render article
+    markdown = render_article2(evidence)
+
+    return ArticleContent(
+        article_num=2,
+        title=f"個股深度｜{selected.ticker} {selected.name}",
+        slug_suffix=selected.ticker.lower(),
+        markdown_content=markdown,
+        tags=["deep-dive", selected.ticker, evidence.sector.lower()],
+        excerpt=f"深入解析 {selected.name} 的基本面、財務與估值。",
+    )
+
+
+def generate_article3_with_fmp(
+    target_date: date,
+    fmp_config: FMPConfig,
+    scored_events: list,
+    output_dir: Path = None,
+) -> ArticleContent:
+    """Generate Article 3 using FMP data and theme detection."""
+    from app.evidence.build_article3 import build_article3_evidence, generate_supply_chain_chart_for_article3
+    from app.features.theme_detection import detect_themes
+    from app.ingest.fmp_client import FMPClient
+    from app.llm.writer import render_article3
+
+    logger.info("生成文章 3：產業主題趨勢...")
+
+    fmp = FMPClient(fmp_config)
+
+    # Detect themes from events
+    headlines = [e.event.headline for e in scored_events] if scored_events else []
+
+    # Build ticker counts from events
+    ticker_counts = {}
+    for ev in scored_events:
+        for ticker in ev.event.tickers:
+            ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
+
+    themes = detect_themes(headlines, ticker_counts)
+
+    if not themes:
+        logger.warning("無主題可選，使用預設 AI 伺服器")
+        from app.features.theme_detection import DetectedTheme
+
+        themes = [DetectedTheme(
+            theme_id="ai-server",
+            display_name="AI 伺服器",
+            score=1.0,
+            matched_keywords=["AI"],
+            relevant_tickers=["NVDA", "AMD", "TSM"],
+            trigger_events=["AI 需求持續成長"],
+        )]
+
+    selected_theme = themes[0]
+    logger.info(f"選中主題: {selected_theme.display_name}")
+
+    # Build evidence pack with recent news for LLM
+    evidence = build_article3_evidence(
+        target_date, fmp, selected_theme, recent_news=headlines[:5]
+    )
+
+    # Generate supply chain chart (v8)
+    if output_dir is None:
+        output_dir = Path("output") / target_date.isoformat()
+    chart_path = generate_supply_chain_chart_for_article3(evidence, output_dir)
+    if chart_path:
+        logger.info(f"產業鏈圖已生成: {chart_path}")
+
+    # Render article
+    markdown = render_article3(evidence)
+
+    return ArticleContent(
+        article_num=3,
+        title=f"產業趨勢｜{selected_theme.display_name}",
+        slug_suffix=selected_theme.theme_id,
+        markdown_content=markdown,
+        tags=["theme", selected_theme.theme_id],
+        excerpt=f"解析 {selected_theme.display_name} 的關鍵趨勢與投資機會。",
+    )
+
+
 def generate_placeholder_article3(target_date: date) -> ArticleContent:
-    """Generate placeholder Article 3 (will be real in v3)."""
+    """Generate placeholder Article 3 (fallback only)."""
     date_display = target_date.strftime("%Y/%m/%d")
 
     return ArticleContent(
@@ -331,58 +486,9 @@ AI 基礎設施需求持續攀升，帶動整體供應鏈受惠。
 
 ---
 
-## 驅動因子
-
-### 1. 算力需求爆發
-
-大型語言模型訓練與推論需求持續成長。
-
-### 2. 資料中心擴張
-
-雲端服務商加速 capex 投入。
-
-### 3. 技術迭代
-
-先進封裝、HBM、CoWoS 等技術成為瓶頸與關鍵。
-
----
-
-## 產業鏈結構
-
-| 位置 | 環節 | 代表公司 | 說明 |
-|------|------|----------|------|
-| 上游 | GPU/ASIC | NVDA, AMD | 核心運算晶片 |
-| 中游 | 封裝/記憶體 | TSM, SK Hynix | 先進製程與 HBM |
-| 下游 | 伺服器組裝 | Dell, HPE | 系統整合 |
-
----
-
-## 代表股票
-
-| 股票 | 市值 | 核心業務 | 產業鏈位置 | 觀點 |
-|------|------|----------|------------|------|
-| NVDA | -- | GPU | 上游 | 龍頭 |
-| AMD | -- | GPU/CPU | 上游 | 挑戰者 |
-| TSM | -- | 晶圓代工 | 中游 | 關鍵供應商 |
-
----
-
-## 情境展望
-
-### 🐂 Bull Case
-AI 需求超預期，供應鏈全線受惠。
-
-### ⚖️ Base Case
-穩健成長，符合市場預期。
-
-### 🐻 Bear Case
-需求放緩，庫存調整。
-
----
-
 ## 風險提示
 
-本文內容僅供參考，不構成任何投資建議。投資有風險，入市需謹慎。過去績效不代表未來表現。
+本文內容僅供參考，不構成任何投資建議。
 
 ---
 
@@ -408,23 +514,134 @@ def generate_articles(
     Returns:
         List of 3 ArticleContent objects
     """
+    from app.features.event_scoring import score_events, select_top_events
+    from app.ingest.fmp_client import FMPClient
+    from app.normalize.dedupe import deduplicate_news, filter_by_universe
+
     articles = []
+    scored_events = []
+    price_changes = {}
+
+    # Get FMP data if available
+    if use_fmp and config and config.fmp:
+        try:
+            fmp = FMPClient(config.fmp)
+
+            # Get S&P 500 constituents and merge with seed
+            try:
+                sp500 = set(fmp.get_sp500_constituents())
+                universe = SEED_UNIVERSE | sp500
+            except Exception:
+                universe = SEED_UNIVERSE
+
+            # Get news
+            stock_news = fmp.get_stock_news(limit=100)
+            general_news = fmp.get_general_news(limit=50)
+            all_news = stock_news + general_news
+
+            # Deduplicate and filter
+            events = deduplicate_news(all_news)
+            events = filter_by_universe(events, universe)
+
+            # Get price changes
+            try:
+                movers = fmp.get_gainers_losers()
+                for item in movers.get("gainers", []) + movers.get("losers", []):
+                    symbol = item.get("symbol")
+                    change = item.get("changesPercentage", 0)
+                    if symbol:
+                        price_changes[symbol] = change
+            except Exception:
+                pass
+
+            # Score events
+            scored_events = score_events(events, price_changes)
+            scored_events = select_top_events(scored_events, min_count=5, max_count=8)
+
+            # Add SEC events (v6)
+            try:
+                from app.ingest.sec_client import SECClient
+
+                sec_client = SECClient()
+                # Check top tickers from scored events for SEC filings
+                top_tickers = set()
+                for ev in scored_events:
+                    top_tickers.update(ev.event.tickers[:2])
+
+                for ticker in list(top_tickers)[:10]:  # Limit API calls
+                    sec_events = sec_client.detect_events(ticker, days_back=3)
+                    for sec_ev in sec_events:
+                        if sec_ev.importance == "high":
+                            # Add SEC event to scored events
+                            from app.normalize.dedupe import NewsEvent
+                            from app.features.event_scoring import ScoredEvent
+
+                            news_ev = NewsEvent(
+                                headline=f"[SEC {sec_ev.form_type}] {ticker}: {sec_ev.description}",
+                                text=f"{ticker} filed {sec_ev.form_type} with SEC on {sec_ev.filing_date}.",
+                                tickers=[ticker],
+                                source_urls=[sec_ev.url],
+                                published_at=None,
+                            )
+                            sec_scored = ScoredEvent(
+                                event=news_ev,
+                                event_type="sec_filing",
+                                score=0.7,
+                                price_score=0,
+                                recency_score=0.8,
+                                novelty_score=0.6,
+                            )
+                            scored_events.append(sec_scored)
+                            logger.info(f"Added SEC event: {sec_ev.form_type} for {ticker}")
+
+                # Re-sort and limit
+                scored_events = sorted(scored_events, key=lambda x: x.score, reverse=True)[:8]
+            except Exception as e:
+                logger.warning(f"SEC event detection failed: {e}")
+
+        except Exception as e:
+            logger.error(f"FMP 取得失敗: {e}")
 
     # Article 1: Daily Brief
-    if use_fmp and config and config.fmp:
+    if use_fmp and config and config.fmp and scored_events:
         try:
             article1 = generate_article1_with_fmp(target_date, config.fmp)
         except Exception as e:
-            logger.error(f"FMP 取得失敗，使用佔位內容: {e}")
+            logger.error(f"文章 1 生成失敗: {e}")
             article1 = generate_placeholder_article1(target_date)
     else:
         article1 = generate_placeholder_article1(target_date)
 
     articles.append(article1)
 
-    # Article 2 & 3: Placeholder (will be real in v3)
-    articles.append(generate_placeholder_article2(target_date))
-    articles.append(generate_placeholder_article3(target_date))
+    # Article 2: Hot Stock Deep Dive
+    if use_fmp and config and config.fmp:
+        try:
+            article2 = generate_article2_with_fmp(
+                target_date, config.fmp, scored_events, price_changes,
+                ghost_config=config.ghost if config else None
+            )
+        except Exception as e:
+            logger.error(f"文章 2 生成失敗: {e}")
+            article2 = generate_placeholder_article2(target_date)
+    else:
+        article2 = generate_placeholder_article2(target_date)
+
+    articles.append(article2)
+
+    # Article 3: Theme/Sector Trends
+    if use_fmp and config and config.fmp:
+        try:
+            article3 = generate_article3_with_fmp(
+                target_date, config.fmp, scored_events
+            )
+        except Exception as e:
+            logger.error(f"文章 3 生成失敗: {e}")
+            article3 = generate_placeholder_article3(target_date)
+    else:
+        article3 = generate_placeholder_article3(target_date)
+
+    articles.append(article3)
 
     return articles
 
@@ -440,14 +657,22 @@ def run(args: argparse.Namespace) -> int:
     # Get target date
     target_date = get_target_date(args.date)
     logger.info(f"目標日期: {target_date}")
-    logger.info(f"模式: {'dry-run' if args.dry_run else 'publish'}")
+
+    # Determine mode
+    if args.dry_run:
+        mode = "dry-run"
+    elif args.publish_live:
+        mode = "publish-live (send newsletter)"
+    else:
+        mode = "publish (draft)"
+    logger.info(f"模式: {mode}")
 
     try:
         # Load configuration
         config = None
         ghost_config = None
 
-        if args.publish:
+        if args.publish or args.publish_live:
             config = load_config()
             ghost_config = config.ghost
         elif not args.no_fmp:
@@ -465,14 +690,41 @@ def run(args: argparse.Namespace) -> int:
         articles = generate_articles(target_date, config, use_fmp=use_fmp)
         logger.info(f"已生成 {len(articles)} 篇文章")
 
-        # Publish or dry-run
+        # QA Gate (v9) - run before publishing
+        from app.ops.qa_gate import run_qa_gate, save_qa_report
+
+        qa_articles = [
+            (a.article_num, a.markdown_content) for a in articles
+        ]
+        qa_report = run_qa_gate(qa_articles, target_date)
+
         output_dir = Path(args.output_dir)
+        save_qa_report(qa_report, output_dir / target_date.strftime("%Y-%m-%d"))
+
+        if qa_report.status == "fail" and not args.dry_run:
+            logger.warning(f"QA Gate failed with {len(qa_report.errors)} errors")
+            for error in qa_report.errors:
+                logger.warning(f"  [{error.code}] Article {error.article_num}: {error.message}")
+            # Send QA failure alert (v10)
+            from app.ops.alerts import alert_on_qa_fail
+            alert_on_qa_fail(qa_report.to_json())
+            # Don't block, just warn - uncomment below to block publishing
+            # raise ValueError(f"QA Gate failed: {len(qa_report.errors)} errors")
+        else:
+            logger.info(f"QA Gate: {qa_report.status.upper()} ({qa_report.passed}/{qa_report.articles_checked} passed)")
+
+        # Publish or dry-run
+
+        # Determine if publishing as draft (default) or live
+        as_draft = not args.publish_live
+
         results = publish_articles(
             articles=articles,
             target_date=target_date,
             config=ghost_config,
             dry_run=args.dry_run,
             output_dir=output_dir,
+            as_draft=as_draft,
         )
 
         # Summary
@@ -484,18 +736,31 @@ def run(args: argparse.Namespace) -> int:
             status = result.get("status", "unknown")
             if status == "dry_run":
                 logger.info(f"  文章 {article_num}: {result['md_path']}")
-            elif status == "published":
-                logger.info(f"  文章 {article_num}: {result['url']}")
+            elif status in ("draft", "published"):
+                status_label = "草稿" if status == "draft" else "已發佈"
+                logger.info(f"  文章 {article_num} [{status_label}]: {result['url']}")
                 if result.get("newsletter_sent"):
                     logger.info(f"    -> Newsletter 已寄出")
             else:
                 logger.error(f"  文章 {article_num}: {result.get('error', 'unknown error')}")
         logger.info("=" * 60)
 
+        # Success alert (v10) - only if configured
+        from app.ops.alerts import alert_on_success
+        alert_on_success()
+
         return 0
 
     except Exception as e:
         logger.exception(f"執行失敗: {e}")
+
+        # Failure alert (v10)
+        from app.ops.alerts import alert_on_failure
+        alert_on_failure(
+            error_message=str(e),
+            details={"date": target_date.isoformat() if 'target_date' in dir() else None},
+        )
+
         return 1
 
 

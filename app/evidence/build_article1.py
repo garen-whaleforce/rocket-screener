@@ -49,13 +49,19 @@ def build_market_snapshot(
 
 def build_top_events(
     scored_events: list[ScoredEvent],
+    price_changes: Optional[dict[str, float]] = None,
+    use_llm: bool = True,
 ) -> list[TopEvent]:
     """Build top events from scored events.
 
-    Note: LLM will later fill in why_important, impact, next_watch.
-    For now, we use the text from the news item.
+    Uses LLM to fill in why_important, impact, next_watch.
+    Falls back to placeholders if LLM unavailable.
     """
+    from app.llm.client import get_llm_client
+
     events = []
+    llm_client = get_llm_client() if use_llm else None
+    price_changes = price_changes or {}
 
     for i, scored in enumerate(scored_events, start=1):
         event = scored.event
@@ -65,6 +71,26 @@ def build_top_events(
         if len(text) > 500:
             text = text[:500] + "..."
 
+        # Generate analysis using LLM
+        why_important = None
+        impact = None
+        next_watch = None
+
+        if llm_client:
+            try:
+                analysis = llm_client.generate_event_analysis(
+                    headline=event.headline,
+                    what_happened=text,
+                    related_tickers=event.tickers,
+                    price_changes=price_changes,
+                )
+                why_important = analysis.get("why_important")
+                impact = analysis.get("impact")
+                next_watch = analysis.get("next_watch")
+                logger.info(f"LLM generated analysis for event {i}: {event.headline[:50]}...")
+            except Exception as e:
+                logger.warning(f"LLM analysis failed for event {i}: {e}")
+
         events.append(
             TopEvent(
                 rank=i,
@@ -72,6 +98,9 @@ def build_top_events(
                 event_type=scored.event_type,
                 headline=event.headline,
                 what_happened=text,
+                why_important=why_important,
+                impact=impact,
+                next_watch=next_watch,
                 source_urls=event.source_urls,
             )
         )
@@ -118,6 +147,8 @@ def build_article1_evidence(
     target_date: date,
     fmp_client: Optional[FMPClient],
     scored_events: list[ScoredEvent],
+    price_changes: Optional[dict[str, float]] = None,
+    use_llm: bool = True,
 ) -> Article1Evidence:
     """Build complete Article 1 Evidence Pack.
 
@@ -125,6 +156,8 @@ def build_article1_evidence(
         target_date: Date for the article
         fmp_client: FMP client (None for dry-run without API)
         scored_events: Scored and filtered events
+        price_changes: Dict of ticker -> price change % for LLM context
+        use_llm: Whether to use LLM for generating analysis
 
     Returns:
         Article1Evidence ready for LLM/template rendering
@@ -148,8 +181,8 @@ def build_article1_evidence(
             ),
         ]
 
-    # Build top events
-    top_events = build_top_events(scored_events)
+    # Build top events with LLM analysis
+    top_events = build_top_events(scored_events, price_changes, use_llm)
 
     # Generate watch tonight
     watch_tonight = generate_watch_tonight(top_events, market_snapshot)

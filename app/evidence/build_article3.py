@@ -2,6 +2,7 @@
 
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from app.evidence.schemas import (
@@ -83,6 +84,7 @@ def build_article3_evidence(
     target_date: date,
     fmp_client: Optional[FMPClient],
     theme: DetectedTheme,
+    recent_news: Optional[list[str]] = None,
 ) -> Article3Evidence:
     """Build complete Article 3 Evidence Pack.
 
@@ -90,10 +92,13 @@ def build_article3_evidence(
         target_date: Date for the article
         fmp_client: FMP client
         theme: Selected theme
+        recent_news: Recent news headlines related to the theme
 
     Returns:
         Article3Evidence ready for rendering
     """
+    from app.llm.client import get_llm_client
+
     theme_id = theme.theme_id
     content = THEME_CONTENT.get(theme_id, THEME_CONTENT["ai-server"])
 
@@ -126,21 +131,80 @@ def build_article3_evidence(
             )
         )
 
+    # Use LLM to enhance theme analysis if available
+    why_now = content["why_now"]
+    drivers = content["drivers"]
+    bull_case = content["bull_case"]
+    bear_case = content["bear_case"]
+    investment_strategy = content["investment_strategy"]
+
+    llm_client = get_llm_client()
+    if llm_client and recent_news:
+        try:
+            stocks_for_llm = [
+                {"ticker": s.ticker, "business": s.business}
+                for s in representative_stocks
+            ]
+            analysis = llm_client.generate_theme_analysis(
+                theme=theme_id,
+                theme_display=theme.display_name,
+                representative_stocks=stocks_for_llm,
+                recent_news=recent_news or [],
+            )
+            why_now = analysis.get("why_now", why_now)
+            if analysis.get("drivers"):
+                drivers = [
+                    ThemeDriver(title=d["title"], description=d["description"])
+                    for d in analysis["drivers"]
+                ]
+            bull_case = analysis.get("bull_case", bull_case)
+            bear_case = analysis.get("bear_case", bear_case)
+            investment_strategy = analysis.get("investment_strategy", investment_strategy)
+            logger.info(f"LLM enhanced theme analysis for {theme_id}")
+        except Exception as e:
+            logger.warning(f"LLM theme analysis failed: {e}")
+
     return Article3Evidence(
         date=target_date,
         theme=theme_id,
         theme_display=theme.display_name,
-        why_now=content["why_now"],
-        drivers=content["drivers"],
+        why_now=why_now,
+        drivers=drivers,
         supply_chain_overview=content["supply_chain_overview"],
         supply_chain=content["supply_chain"],
         representative_stocks=representative_stocks,
-        bull_case=content["bull_case"],
+        bull_case=bull_case,
         base_case=content["base_case"],
-        bear_case=content["bear_case"],
-        investment_strategy=content["investment_strategy"],
+        bear_case=bear_case,
+        investment_strategy=investment_strategy,
         upcoming_events=[
             {"date": "持續關注", "description": "大型科技股財報"},
             {"date": "每季", "description": "資料中心 Capex 更新"},
         ],
     )
+
+
+def generate_supply_chain_chart_for_article3(
+    evidence: Article3Evidence,
+    output_dir: Path,
+) -> Optional[str]:
+    """Generate supply chain chart for Article 3.
+
+    Args:
+        evidence: Article3Evidence with supply chain data
+        output_dir: Directory to save chart
+
+    Returns:
+        Path to generated PNG, or None if failed
+    """
+    try:
+        from app.features.supply_chain_chart import generate_supply_chain_chart_from_evidence
+
+        chart_path = generate_supply_chain_chart_from_evidence(evidence, output_dir)
+        if chart_path:
+            evidence.supply_chain_chart_url = chart_path
+            logger.info(f"Generated supply chain chart: {chart_path}")
+        return chart_path
+    except Exception as e:
+        logger.warning(f"Failed to generate supply chain chart: {e}")
+        return None

@@ -105,6 +105,7 @@ def build_article2_evidence(
     target_date: date,
     fmp_client: Optional[FMPClient],
     hot_stock: HotStockCandidate,
+    transcript_config=None,
 ) -> Article2Evidence:
     """Build complete Article 2 Evidence Pack.
 
@@ -112,6 +113,7 @@ def build_article2_evidence(
         target_date: Date for the article
         fmp_client: FMP client
         hot_stock: Selected hot stock
+        transcript_config: Optional transcript API config
 
     Returns:
         Article2Evidence ready for rendering
@@ -248,7 +250,7 @@ def build_article2_evidence(
         current_price, pe_ratio, forward_pe, eps
     )
 
-    # Default catalysts and risks
+    # Generate catalysts and risks using LLM
     catalysts = [
         "新產品發布或業務拓展",
         "財報超預期",
@@ -259,6 +261,65 @@ def build_article2_evidence(
         "競爭加劇",
         "估值過高風險",
     ]
+
+    # Use LLM to generate better analysis
+    from app.llm.client import get_llm_client
+
+    llm_client = get_llm_client()
+    if llm_client:
+        try:
+            financials_for_llm = [
+                {"name": f.name, "current": f.current} for f in financials
+            ]
+            valuation_for_llm = {
+                "pe": pe_ratio,
+                "forward_pe": forward_pe,
+                "ps": ps_ratio,
+                "ev_ebitda": ev_ebitda,
+            }
+            analysis = llm_client.generate_stock_analysis(
+                ticker=ticker,
+                company_name=company_name,
+                description=description[:300] if description else "",
+                financials=financials_for_llm,
+                valuation=valuation_for_llm,
+                price_change=price_change_1d,
+            )
+            catalysts = analysis.get("catalysts", catalysts)
+            risks = analysis.get("risk_factors", risks)
+            logger.info(f"LLM generated analysis for {ticker}")
+        except Exception as e:
+            logger.warning(f"LLM analysis failed for {ticker}: {e}")
+
+    # Fetch management signals from transcript (v5 - LLM enhanced)
+    management_signals = None
+    if transcript_config:
+        try:
+            from app.ingest.transcript_client import (
+                TranscriptClient,
+                get_management_signals,
+                extract_with_llm,
+            )
+
+            transcript_client = TranscriptClient(transcript_config)
+
+            # Try LLM-enhanced extraction first (v5)
+            extract, _ = extract_with_llm(transcript_client, ticker, llm_client)
+
+            if extract:
+                # Use enhanced extraction
+                from app.llm.extract_transcript_json import get_enhanced_management_signals
+                management_signals = get_enhanced_management_signals(extract)
+                logger.info(f"LLM transcript extracted for {ticker}: {extract.quarter}")
+            else:
+                # Fallback to keyword-based extraction
+                raw_transcript = transcript_client.get_latest_transcript(ticker)
+                if raw_transcript:
+                    extract = transcript_client.extract_structured_data(raw_transcript)
+                    management_signals = get_management_signals(extract)
+                    logger.info(f"Keyword transcript extracted for {ticker}: {extract.quarter if extract else 'N/A'}")
+        except Exception as e:
+            logger.warning(f"Transcript fetch failed for {ticker}: {e}")
 
     return Article2Evidence(
         date=target_date,
@@ -282,4 +343,5 @@ def build_article2_evidence(
         competitors=competitors,
         catalysts=catalysts,
         risks=risks,
+        management_signals=management_signals,
     )

@@ -45,10 +45,13 @@ class GhostConfig:
 
 @dataclass
 class FMPConfig:
-    """Financial Modeling Prep API configuration."""
+    """Financial Modeling Prep API configuration.
+
+    Uses /stable/ endpoints only. See FMP_STABLE_API_REFERENCE.md.
+    """
 
     api_key: str
-    base_url: str = "https://financialmodelingprep.com/api/v3"
+    base_url: str = "https://financialmodelingprep.com"
 
     @classmethod
     def from_env(cls) -> "FMPConfig":
@@ -75,12 +78,50 @@ class TranscriptConfig:
 
 
 @dataclass
+class LiteLLMConfig:
+    """LiteLLM unified proxy configuration."""
+
+    api_url: str
+    api_key: str
+    model: str = "cli-gpt-5.2"
+
+    @classmethod
+    def from_env(cls) -> Optional["LiteLLMConfig"]:
+        """Load LiteLLM config from environment variables."""
+        api_url = os.environ.get("LITELLM_API_URL")
+        api_key = os.environ.get("LITELLM_API_KEY")
+        if not api_url or not api_key:
+            return None
+        model = os.environ.get("LITELLM_MODEL", "cli-gpt-5.2")
+        return cls(api_url=api_url, api_key=api_key, model=model)
+
+
+@dataclass
+class MemberWallConfig:
+    """Member wall (paywall) configuration."""
+
+    enabled: bool = False
+    article2_members_only: bool = False  # Article 2 behind paywall
+    article3_members_only: bool = False  # Article 3 behind paywall
+
+    @classmethod
+    def from_env(cls) -> "MemberWallConfig":
+        """Load member wall config from environment variables."""
+        enabled = os.environ.get("MEMBER_WALL_ENABLED", "").lower() in ("true", "1", "yes")
+        article2 = os.environ.get("ARTICLE2_MEMBERS_ONLY", "").lower() in ("true", "1", "yes")
+        article3 = os.environ.get("ARTICLE3_MEMBERS_ONLY", "").lower() in ("true", "1", "yes")
+        return cls(enabled=enabled, article2_members_only=article2, article3_members_only=article3)
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
 
     ghost: GhostConfig
     fmp: Optional[FMPConfig] = None
     transcript: Optional[TranscriptConfig] = None
+    litellm: Optional[LiteLLMConfig] = None
+    member_wall: Optional[MemberWallConfig] = None
     output_dir: Path = Path("out")
     log_level: str = "INFO"
 
@@ -99,6 +140,12 @@ class AppConfig:
         if os.environ.get("TRANSCRIPT_API_URL"):
             transcript = TranscriptConfig.from_env()
 
+        # LiteLLM for LLM-based content generation
+        litellm = LiteLLMConfig.from_env()
+
+        # Member wall configuration
+        member_wall = MemberWallConfig.from_env()
+
         output_dir = Path(os.environ.get("OUTPUT_DIR", "out"))
         log_level = os.environ.get("LOG_LEVEL", "INFO")
 
@@ -106,6 +153,8 @@ class AppConfig:
             ghost=ghost,
             fmp=fmp,
             transcript=transcript,
+            litellm=litellm,
+            member_wall=member_wall,
             output_dir=output_dir,
             log_level=log_level,
         )
