@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from app.config import TZ, load_config
+from app.config import TZ, AppConfig, FMPConfig, load_config
 from app.publish.publish_posts import ArticleContent, publish_articles
 
 # Configure logging
@@ -23,6 +23,19 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("rocketscreener")
+
+
+# Universe: S&P 500 + hot stocks (will be loaded dynamically in v3+)
+SEED_UNIVERSE = {
+    # Mega caps
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
+    "BRK.B", "JPM", "JNJ", "V", "UNH", "HD", "PG", "MA", "DIS",
+    # Tech / AI
+    "AMD", "INTC", "CRM", "ADBE", "NFLX", "PYPL", "AVGO", "QCOM",
+    "MU", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "SMCI",
+    # Other notable
+    "COST", "WMT", "XOM", "CVX", "LLY", "NVO", "ABBV", "MRK", "PFE",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         help="Output directory for dry-run mode (default: out)",
     )
 
+    parser.add_argument(
+        "--no-fmp",
+        action="store_true",
+        help="Skip FMP API calls (use placeholder data)",
+    )
+
     return parser.parse_args()
 
 
@@ -68,15 +87,79 @@ def get_target_date(date_str: Optional[str]) -> date:
     return datetime.now(TZ).date()
 
 
-def generate_placeholder_articles(target_date: date) -> list[ArticleContent]:
-    """Generate placeholder articles for v1 testing.
+def generate_article1_with_fmp(
+    target_date: date,
+    fmp_config: FMPConfig,
+) -> ArticleContent:
+    """Generate Article 1 using FMP data."""
+    from app.evidence.build_article1 import build_article1_evidence
+    from app.features.event_scoring import score_events, select_top_events
+    from app.ingest.fmp_client import FMPClient
+    from app.llm.writer import render_article1
+    from app.normalize.dedupe import deduplicate_news, filter_by_universe
 
-    In v2+, this will be replaced with real data from FMP/SEC/transcripts.
-    """
+    logger.info("正在從 FMP 取得資料...")
+
+    fmp = FMPClient(fmp_config)
+
+    # Get S&P 500 constituents and merge with seed
+    try:
+        sp500 = set(fmp.get_sp500_constituents())
+        universe = SEED_UNIVERSE | sp500
+        logger.info(f"Universe 大小: {len(universe)}")
+    except Exception as e:
+        logger.warning(f"無法取得 S&P 500 成分股: {e}")
+        universe = SEED_UNIVERSE
+
+    # Get news
+    logger.info("取得新聞...")
+    stock_news = fmp.get_stock_news(limit=100)
+    general_news = fmp.get_general_news(limit=50)
+    all_news = stock_news + general_news
+    logger.info(f"取得 {len(all_news)} 則新聞")
+
+    # Deduplicate
+    events = deduplicate_news(all_news)
+
+    # Filter by universe
+    events = filter_by_universe(events, universe)
+
+    # Get price changes for scoring
+    price_changes = {}
+    try:
+        movers = fmp.get_gainers_losers()
+        for item in movers.get("gainers", []) + movers.get("losers", []):
+            symbol = item.get("symbol")
+            change = item.get("changesPercentage", 0)
+            if symbol:
+                price_changes[symbol] = change
+    except Exception as e:
+        logger.warning(f"無法取得漲跌幅: {e}")
+
+    # Score and select
+    scored = score_events(events, price_changes)
+    top_events = select_top_events(scored, min_count=5, max_count=8)
+
+    # Build evidence pack
+    evidence = build_article1_evidence(target_date, fmp, top_events)
+
+    # Render article
+    markdown = render_article1(evidence)
+
+    return ArticleContent(
+        article_num=1,
+        title=f"美股盤後晨報 | {target_date.strftime('%Y/%m/%d')}",
+        markdown_content=markdown,
+        tags=["daily-brief", "market-update"],
+        excerpt="每日美股盤後精選焦點，掌握市場脈動。",
+    )
+
+
+def generate_placeholder_article1(target_date: date) -> ArticleContent:
+    """Generate placeholder Article 1 (no FMP)."""
     date_display = target_date.strftime("%Y/%m/%d")
 
-    # Article 1: Daily Brief (placeholder)
-    article1 = ArticleContent(
+    return ArticleContent(
         article_num=1,
         title=f"美股盤後晨報 | {date_display}",
         markdown_content=f"""# 美股盤後晨報 | {date_display}
@@ -101,7 +184,6 @@ def generate_placeholder_articles(target_date: date) -> list[ArticleContent]:
 | Nasdaq | -- | -- | -- |
 | 道瓊工業 | -- | -- | -- |
 | 10Y 殖利率 | -- | -- | -- |
-| 美元指數 | -- | -- | -- |
 | 原油 (WTI) | -- | -- | -- |
 | 黃金 | -- | -- | -- |
 | BTC | -- | -- | -- |
@@ -110,21 +192,21 @@ def generate_placeholder_articles(target_date: date) -> list[ArticleContent]:
 
 ## 今日焦點
 
-> ⚠️ 這是測試版本，實際數據將在 v2 串接 FMP API 後呈現。
+> ℹ️ 使用 --no-fmp 模式，顯示佔位內容。設定 FMP_API_KEY 環境變數以取得真實數據。
 
-### 1. 測試事件一
+### 1. 市場觀望
 
 **發生什麼事？**
-這是一個 placeholder 事件。
+投資者等待重要經濟數據公布。
 
 **為何重要？**
-測試文章模板結構。
+數據將影響 Fed 利率決策方向。
 
 **可能影響**
-驗證 Ghost 發佈流程。
+短期市場波動可能加劇。
 
 **下一步觀察**
-確認 idempotent 機制正常。
+關注數據公布後的市場反應。
 
 📎 來源：[1](https://example.com)
 
@@ -132,9 +214,9 @@ def generate_placeholder_articles(target_date: date) -> list[ArticleContent]:
 
 ## 今晚必看
 
-- 經濟數據公布
-- 企業財報發布
-- Fed 官員談話
+- 盤後財報公布動態
+- 亞洲市場開盤反應
+- 重要經濟數據公布
 
 ---
 
@@ -150,10 +232,14 @@ def generate_placeholder_articles(target_date: date) -> list[ArticleContent]:
         excerpt="每日美股盤後精選焦點，掌握市場脈動。",
     )
 
-    # Article 2: Stock Deep Dive (placeholder)
-    article2 = ArticleContent(
+
+def generate_placeholder_article2(target_date: date) -> ArticleContent:
+    """Generate placeholder Article 2 (will be real in v3)."""
+    date_display = target_date.strftime("%Y/%m/%d")
+
+    return ArticleContent(
         article_num=2,
-        title=f"個股深度｜NVDA 輝達：AI 晶片霸主的估值解析",
+        title="個股深度｜NVDA 輝達：AI 晶片霸主的估值解析",
         slug_suffix="nvda",
         markdown_content=f"""# 個股深度｜NVDA 輝達：AI 晶片霸主的估值解析
 
@@ -174,7 +260,7 @@ NVIDIA（輝達）是全球領先的 GPU 與 AI 運算平台公司。
 
 ## 基本面分析
 
-> ⚠️ 這是測試版本，實際數據將在 v2 串接 FMP API 後呈現。
+> ℹ️ 完整數據將在 v3 版本呈現。
 
 ---
 
@@ -224,10 +310,14 @@ NVIDIA（輝達）是全球領先的 GPU 與 AI 運算平台公司。
         excerpt="深入解析 NVIDIA 的基本面、財務與估值。",
     )
 
-    # Article 3: Theme/Sector (placeholder)
-    article3 = ArticleContent(
+
+def generate_placeholder_article3(target_date: date) -> ArticleContent:
+    """Generate placeholder Article 3 (will be real in v3)."""
+    date_display = target_date.strftime("%Y/%m/%d")
+
+    return ArticleContent(
         article_num=3,
-        title=f"產業趨勢｜AI 伺服器供應鏈：2025 關鍵趨勢",
+        title="產業趨勢｜AI 伺服器供應鏈：2025 關鍵趨勢",
         slug_suffix="ai-server",
         markdown_content=f"""# 產業趨勢｜AI 伺服器供應鏈：2025 關鍵趨勢
 
@@ -302,7 +392,41 @@ AI 需求超預期，供應鏈全線受惠。
         excerpt="解析 AI 伺服器供應鏈的關鍵趨勢與投資機會。",
     )
 
-    return [article1, article2, article3]
+
+def generate_articles(
+    target_date: date,
+    config: Optional[AppConfig],
+    use_fmp: bool = True,
+) -> list[ArticleContent]:
+    """Generate all 3 articles.
+
+    Args:
+        target_date: Date for articles
+        config: App configuration (None for dry-run without config)
+        use_fmp: Whether to use FMP API
+
+    Returns:
+        List of 3 ArticleContent objects
+    """
+    articles = []
+
+    # Article 1: Daily Brief
+    if use_fmp and config and config.fmp:
+        try:
+            article1 = generate_article1_with_fmp(target_date, config.fmp)
+        except Exception as e:
+            logger.error(f"FMP 取得失敗，使用佔位內容: {e}")
+            article1 = generate_placeholder_article1(target_date)
+    else:
+        article1 = generate_placeholder_article1(target_date)
+
+    articles.append(article1)
+
+    # Article 2 & 3: Placeholder (will be real in v3)
+    articles.append(generate_placeholder_article2(target_date))
+    articles.append(generate_placeholder_article3(target_date))
+
+    return articles
 
 
 def run(args: argparse.Namespace) -> int:
@@ -320,16 +444,25 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         # Load configuration
+        config = None
+        ghost_config = None
+
         if args.publish:
             config = load_config()
             ghost_config = config.ghost
-        else:
-            # For dry-run, we don't need Ghost config
-            ghost_config = None
+        elif not args.no_fmp:
+            # Try to load FMP config for dry-run
+            try:
+                config = load_config()
+            except Exception:
+                logger.info("未設定環境變數，使用佔位內容")
 
-        # Generate articles (v1: placeholder, v2+: real data)
+        # Determine if we should use FMP
+        use_fmp = not args.no_fmp and config is not None and config.fmp is not None
+
+        # Generate articles
         logger.info("生成文章...")
-        articles = generate_placeholder_articles(target_date)
+        articles = generate_articles(target_date, config, use_fmp=use_fmp)
         logger.info(f"已生成 {len(articles)} 篇文章")
 
         # Publish or dry-run
