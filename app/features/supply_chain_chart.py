@@ -73,6 +73,39 @@ def generate_supply_chain_chart(
         import matplotlib.pyplot as plt
         import matplotlib.patches as patches
         from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+        from matplotlib.font_manager import FontProperties, findfont, FontManager
+        import matplotlib
+
+        # Find a Chinese font that exists on the system
+        chinese_fonts = [
+            'PingFang TC',      # macOS Traditional Chinese
+            'Heiti TC',         # macOS Traditional Chinese
+            'Arial Unicode MS', # macOS fallback
+            'Microsoft JhengHei',  # Windows Traditional Chinese
+            'Noto Sans CJK TC',    # Linux/Google Fonts
+            'WenQuanYi Zen Hei',   # Linux
+        ]
+
+        # Find first available font
+        font_prop = None
+        for font_name in chinese_fonts:
+            try:
+                fp = FontProperties(family=font_name)
+                font_path = findfont(fp, fallback_to_default=False)
+                if font_path and 'LastResort' not in font_path:
+                    font_prop = FontProperties(fname=font_path)
+                    logger.info(f"Using Chinese font: {font_name} ({font_path})")
+                    # Also set as default
+                    matplotlib.rcParams['font.sans-serif'] = [font_name] + matplotlib.rcParams['font.sans-serif']
+                    matplotlib.rcParams['axes.unicode_minus'] = False
+                    break
+            except Exception:
+                continue
+
+        if font_prop is None:
+            logger.warning("No Chinese font found, text may not render correctly")
+            font_prop = FontProperties()
+
     except ImportError:
         logger.warning("matplotlib not available, skipping chart generation")
         return None
@@ -95,26 +128,27 @@ def generate_supply_chain_chart(
             return None
 
         fig_height = max(6, 2 + max_items * 1.8)
-        fig, ax = plt.subplots(figsize=(14, fig_height))
-        ax.set_xlim(0, 14)
+        fig_width = 16  # Wider to prevent left cutoff
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax.set_xlim(0, fig_width)
         ax.set_ylim(0, fig_height)
         ax.axis('off')
 
         # Title
         ax.text(
-            7, fig_height - 0.5,
+            fig_width / 2, fig_height - 0.5,
             f"{theme_display} 產業鏈",
-            fontsize=16,
+            fontsize=18,
             fontweight='bold',
             ha='center',
-            fontname='Arial Unicode MS' if plt.rcParams['backend'] != 'agg' else None,
+            fontproperties=font_prop,
         )
 
-        # Draw columns
-        col_positions = [1.5, 5.5, 9.5]  # X centers for upstream, midstream, downstream
-        col_width = 3.5
-        header_height = 0.6
-        item_height = 1.4
+        # Draw columns - shifted right to avoid left cutoff
+        col_positions = [2.5, 7.0, 11.5]  # X centers for upstream, midstream, downstream
+        col_width = 4.0
+        header_height = 0.7
+        item_height = 1.5
         item_padding = 0.3
 
         # Draw each position column
@@ -138,10 +172,11 @@ def generate_supply_chain_chart(
             ax.text(
                 x_center, header_y,
                 POSITION_LABELS[pos_idx],
-                fontsize=12,
+                fontsize=14,
                 fontweight='bold',
                 ha='center',
                 va='center',
+                fontproperties=font_prop,
             )
 
             # Draw items
@@ -161,35 +196,37 @@ def generate_supply_chain_chart(
 
                 # Segment name
                 ax.text(
-                    x_center, item_y + 0.35,
+                    x_center, item_y + 0.4,
                     layer.segment,
-                    fontsize=10,
+                    fontsize=12,
                     fontweight='bold',
                     ha='center',
                     va='center',
+                    fontproperties=font_prop,
                 )
 
                 # Companies
-                companies_text = layer.companies if len(layer.companies) < 25 else layer.companies[:22] + "..."
+                companies_text = layer.companies if len(layer.companies) < 28 else layer.companies[:25] + "..."
                 ax.text(
                     x_center, item_y,
                     companies_text,
-                    fontsize=9,
+                    fontsize=11,
                     ha='center',
                     va='center',
                     color='#1976d2',
+                    fontproperties=font_prop,
                 )
 
                 # Notes
-                notes_text = layer.notes if len(layer.notes) < 20 else layer.notes[:17] + "..."
+                notes_text = layer.notes if len(layer.notes) < 22 else layer.notes[:19] + "..."
                 ax.text(
-                    x_center, item_y - 0.35,
+                    x_center, item_y - 0.4,
                     notes_text,
-                    fontsize=8,
+                    fontsize=10,
                     ha='center',
                     va='center',
                     color='#666',
-                    style='italic',
+                    fontproperties=font_prop,
                 )
 
         # Draw arrows between columns
@@ -218,16 +255,17 @@ def generate_supply_chain_chart(
 
         # Disclaimer
         ax.text(
-            7, 0.3,
+            fig_width / 2, 0.3,
             "資料來源：公開資訊整理 | 僅供參考，非投資建議",
-            fontsize=8,
+            fontsize=10,
             ha='center',
             color='gray',
+            fontproperties=font_prop,
         )
 
-        # Save
+        # Save with padding to prevent cutoff
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', pad_inches=0.3, facecolor='white')
         plt.close()
 
         logger.info(f"Generated supply chain chart: {output_path}")

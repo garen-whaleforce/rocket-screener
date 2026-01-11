@@ -4,11 +4,18 @@ Handles all data ingestion from FMP API using STABLE endpoints only.
 Reference: FMP_STABLE_API_REFERENCE.md
 
 IMPORTANT: Only use /stable/ endpoints. Never use /api/v3 or /api/v4.
+
+Optimizations (v2):
+- Session-level caching for company data
+- Cache TTL for frequently accessed data
 """
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import wraps
 from typing import Any, Optional
 
 import requests
@@ -16,6 +23,58 @@ import requests
 from app.config import FMPConfig
 
 logger = logging.getLogger(__name__)
+
+# Cache configuration
+CACHE_TTL_SECONDS = 300  # 5 minutes
+_cache_lock = threading.Lock()
+_cache: dict[str, tuple[Any, float]] = {}  # key -> (value, timestamp)
+
+
+def clear_fmp_cache():
+    """Clear the FMP data cache."""
+    global _cache
+    with _cache_lock:
+        _cache.clear()
+    logger.debug("FMP cache cleared")
+
+
+def _cache_key(method_name: str, *args, **kwargs) -> str:
+    """Generate cache key from method name and arguments."""
+    key_parts = [method_name]
+    key_parts.extend(str(a) for a in args)
+    key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
+    return ":".join(key_parts)
+
+
+def cached(ttl: int = CACHE_TTL_SECONDS):
+    """Decorator to cache method results.
+
+    Args:
+        ttl: Time to live in seconds (default: 5 minutes)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            key = _cache_key(func.__name__, *args, **kwargs)
+
+            # Check cache
+            with _cache_lock:
+                if key in _cache:
+                    value, timestamp = _cache[key]
+                    if time.time() - timestamp < ttl:
+                        logger.debug(f"Cache hit: {key}")
+                        return value
+
+            # Call function
+            result = func(self, *args, **kwargs)
+
+            # Store in cache
+            with _cache_lock:
+                _cache[key] = (result, time.time())
+
+            return result
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -80,6 +139,18 @@ class FMPClient:
 
         return response.json()
 
+    def _calc_change_pct(self, price: float, change: float) -> float:
+        """Calculate change percentage from price and change.
+
+        Always calculates ourselves instead of trusting API changesPercentage.
+        """
+        if price == 0 or change == 0:
+            return 0.0
+        prev_price = price - change
+        if prev_price == 0:
+            return 0.0
+        return round((change / prev_price) * 100, 2)
+
     def get_market_snapshot(self) -> dict[str, MarketQuote]:
         """Get market snapshot for key indices and assets.
 
@@ -88,6 +159,8 @@ class FMPClient:
         - /stable/batch-crypto-quotes for BTC
         - /stable/batch-commodity-quotes for Gold/Oil
         - /stable/treasury-rates for 10Y yield
+
+        NOTE: We calculate change_percent ourselves to avoid API inconsistencies.
         """
         quotes = {}
 
@@ -102,12 +175,16 @@ class FMPClient:
             for item in data or []:
                 symbol = item.get("symbol", "")
                 if symbol in symbols_map:
+                    price = item.get("price", 0) or 0
+                    change = item.get("change", 0) or 0
+                    # Calculate percentage ourselves - don't trust API changesPercentage
+                    change_pct = self._calc_change_pct(price, change)
                     quotes[symbol] = MarketQuote(
                         symbol=symbol,
                         name=symbols_map[symbol],
-                        price=item.get("price", 0),
-                        change=item.get("change", 0),
-                        change_percent=item.get("changesPercentage", 0),
+                        price=price,
+                        change=change,
+                        change_percent=change_pct,
                     )
         except Exception as e:
             logger.warning(f"Failed to get ETF quotes: {e}")
@@ -117,12 +194,14 @@ class FMPClient:
             data = self._request("batch-crypto-quotes")
             for item in data or []:
                 if item.get("symbol") == "BTCUSD":
+                    price = item.get("price", 0) or 0
+                    change = item.get("change", 0) or 0
                     quotes["BTC"] = MarketQuote(
                         symbol="BTC",
                         name="Bitcoin",
-                        price=item.get("price", 0),
-                        change=item.get("change", 0),
-                        change_percent=item.get("changesPercentage", 0),
+                        price=price,
+                        change=change,
+                        change_percent=self._calc_change_pct(price, change),
                     )
                     break
         except Exception as e:
@@ -133,21 +212,24 @@ class FMPClient:
             data = self._request("batch-commodity-quotes")
             for item in data or []:
                 symbol = item.get("symbol", "")
+                price = item.get("price", 0) or 0
+                change = item.get("change", 0) or 0
+                change_pct = self._calc_change_pct(price, change)
                 if "GC" in symbol or symbol == "GCUSD":
                     quotes["Gold"] = MarketQuote(
                         symbol="Gold",
                         name="黃金",
-                        price=item.get("price", 0),
-                        change=item.get("change", 0),
-                        change_percent=item.get("changesPercentage", 0),
+                        price=price,
+                        change=change,
+                        change_percent=change_pct,
                     )
                 elif "CL" in symbol or symbol == "CLUSD":
                     quotes["Oil"] = MarketQuote(
                         symbol="Oil",
                         name="原油 (WTI)",
-                        price=item.get("price", 0),
-                        change=item.get("change", 0),
-                        change_percent=item.get("changesPercentage", 0),
+                        price=price,
+                        change=change,
+                        change_percent=change_pct,
                     )
         except Exception as e:
             logger.warning(f"Failed to get commodity quotes: {e}")
@@ -278,6 +360,7 @@ class FMPClient:
 
         return news_items
 
+    @cached(ttl=60)  # 1 minute cache for quotes
     def get_quote(self, symbol: str) -> Optional[dict]:
         """Get quote for a single symbol.
 
@@ -290,6 +373,7 @@ class FMPClient:
             logger.error(f"Failed to get quote for {symbol}: {e}")
             return None
 
+    @cached(ttl=3600)  # 1 hour cache for profiles (rarely change)
     def get_company_profile(self, symbol: str) -> Optional[dict]:
         """Get company profile.
 
@@ -302,6 +386,7 @@ class FMPClient:
             logger.error(f"Failed to get profile for {symbol}: {e}")
             return None
 
+    @cached(ttl=3600)  # 1 hour cache for ratios
     def get_financial_ratios(self, symbol: str) -> Optional[dict]:
         """Get financial ratios (TTM).
 
@@ -314,6 +399,7 @@ class FMPClient:
             logger.error(f"Failed to get ratios for {symbol}: {e}")
             return None
 
+    @cached(ttl=3600)  # 1 hour cache for metrics
     def get_key_metrics(self, symbol: str) -> Optional[dict]:
         """Get key metrics (TTM).
 
@@ -341,6 +427,40 @@ class FMPClient:
             return data or []
         except Exception as e:
             logger.error(f"Failed to get income statement for {symbol}: {e}")
+            return []
+
+    def get_balance_sheet(
+        self, symbol: str, period: str = "quarter", limit: int = 4
+    ) -> list[dict]:
+        """Get balance sheet statements.
+
+        Uses: /stable/balance-sheet-statement?symbol=&period=
+        """
+        try:
+            data = self._request(
+                "balance-sheet-statement",
+                {"symbol": symbol, "period": period, "limit": limit},
+            )
+            return data or []
+        except Exception as e:
+            logger.error(f"Failed to get balance sheet for {symbol}: {e}")
+            return []
+
+    def get_cash_flow(
+        self, symbol: str, period: str = "quarter", limit: int = 4
+    ) -> list[dict]:
+        """Get cash flow statements.
+
+        Uses: /stable/cash-flow-statement?symbol=&period=
+        """
+        try:
+            data = self._request(
+                "cash-flow-statement",
+                {"symbol": symbol, "period": period, "limit": limit},
+            )
+            return data or []
+        except Exception as e:
+            logger.error(f"Failed to get cash flow for {symbol}: {e}")
             return []
 
     def get_stock_peers(self, symbol: str) -> list[str]:

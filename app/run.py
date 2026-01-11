@@ -403,6 +403,7 @@ def generate_article3_with_fmp(
     fmp_config: FMPConfig,
     scored_events: list,
     output_dir: Path = None,
+    ghost_config=None,
 ) -> ArticleContent:
     """Generate Article 3 using FMP data and theme detection."""
     from app.evidence.build_article3 import build_article3_evidence, generate_supply_chain_chart_for_article3
@@ -450,8 +451,21 @@ def generate_article3_with_fmp(
     if output_dir is None:
         output_dir = Path("output") / target_date.isoformat()
     chart_path = generate_supply_chain_chart_for_article3(evidence, output_dir)
+    chart_url = None
+
     if chart_path:
         logger.info(f"產業鏈圖已生成: {chart_path}")
+        # Upload to Ghost if config available
+        if ghost_config:
+            try:
+                from app.publish.ghost_client import GhostClient
+
+                ghost = GhostClient(ghost_config)
+                chart_url = ghost.upload_image(chart_path)
+                evidence.supply_chain_chart_url = chart_url
+                logger.info(f"產業鏈圖已上傳: {chart_url}")
+            except Exception as e:
+                logger.warning(f"產業鏈圖上傳失敗: {e}")
 
     # Render article
     markdown = render_article3(evidence)
@@ -633,7 +647,8 @@ def generate_articles(
     if use_fmp and config and config.fmp:
         try:
             article3 = generate_article3_with_fmp(
-                target_date, config.fmp, scored_events
+                target_date, config.fmp, scored_events,
+                ghost_config=config.ghost if config else None
             )
         except Exception as e:
             logger.error(f"文章 3 生成失敗: {e}")

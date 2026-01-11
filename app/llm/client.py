@@ -58,6 +58,97 @@ class LLMClient:
             logger.error(f"LLM generation failed: {e}")
             raise
 
+    def translate_company_description(
+        self,
+        ticker: str,
+        description: str,
+    ) -> str:
+        """Translate company description to Traditional Chinese.
+
+        Args:
+            ticker: Stock ticker
+            description: English company description
+
+        Returns:
+            Traditional Chinese description
+        """
+        system_prompt = """你是專業的財經翻譯，將英文公司簡介翻譯成繁體中文（台灣用語）。
+重要規則：
+- 必須使用繁體中文，不可使用簡體中文
+- 公司名稱保留英文原名
+- 專有名詞和產品名稱保持準確
+- 翻譯要簡潔、專業、易讀
+- 只翻譯內容，不要加任何額外解釋"""
+
+        prompt = f"""請將以下 {ticker} 公司簡介翻譯成繁體中文：
+
+{description}
+
+只回覆翻譯後的內容，不要其他文字。"""
+
+        try:
+            response = self.generate(prompt, system_prompt, max_tokens=800)
+            return response.strip()
+        except Exception as e:
+            logger.warning(f"Company description translation failed: {e}")
+            return description  # Return original if translation fails
+
+    def translate_to_traditional_chinese(
+        self,
+        headline: str,
+        what_happened: str,
+    ) -> dict:
+        """Translate English news headline and text to Traditional Chinese.
+
+        Args:
+            headline: English headline
+            what_happened: English description of what happened
+
+        Returns:
+            Dict with headline_zh and what_happened_zh keys
+        """
+        system_prompt = """你是專業的財經翻譯，將英文財經新聞翻譯成繁體中文（台灣用語）。
+重要規則：
+- 必須使用繁體中文，不可使用簡體中文
+- 股票代號保持英文（如 NVDA、AAPL）
+- 公司名稱保留英文原名，可加中文翻譯
+- 專有名詞保持準確（如 Fed、CPI、PCE）
+- 翻譯要簡潔、流暢、專業"""
+
+        prompt = f"""請將以下財經新聞翻譯成繁體中文：
+
+【英文標題】
+{headline}
+
+【英文內容】
+{what_happened}
+
+請用以下 JSON 格式回覆：
+{{
+  "headline_zh": "繁體中文標題",
+  "what_happened_zh": "繁體中文內容"
+}}
+
+只回覆 JSON，不要其他文字。"""
+
+        try:
+            response = self.generate(prompt, system_prompt, max_tokens=600)
+            import json
+
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0]
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0]
+
+            return json.loads(response.strip())
+        except Exception as e:
+            logger.warning(f"Translation failed: {e}")
+            # Return original text if translation fails
+            return {
+                "headline_zh": headline,
+                "what_happened_zh": what_happened,
+            }
+
     def generate_event_analysis(
         self,
         headline: str,
@@ -83,6 +174,7 @@ class LLMClient:
                 price_context += f"- {ticker}: {change:+.2f}%\n"
 
         system_prompt = """你是一位專業的美股分析師，為台灣投資人撰寫每日市場分析。
+重要：所有回覆必須使用「繁體中文」（台灣用語），不可使用簡體中文。
 你的風格：
 - 簡潔有力，每段 1-2 句話
 - 用白話文解釋專業概念
@@ -153,6 +245,7 @@ class LLMClient:
         )
 
         system_prompt = """你是一位專業的美股分析師，為台灣投資人撰寫個股深度分析。
+重要：所有回覆必須使用「繁體中文」（台灣用語），不可使用簡體中文。
 你的風格：
 - 專業但易懂
 - 數據導向，但會解釋數據意義
@@ -199,6 +292,154 @@ class LLMClient:
                 "outlook": "持續關注後續發展。",
             }
 
+    def generate_market_thesis(
+        self,
+        market_snapshot: list[dict],
+        top_events_summary: list[str],
+    ) -> str:
+        """Generate 1-2 sentence market thesis for the day.
+
+        Args:
+            market_snapshot: List of market snapshot items
+            top_events_summary: List of top event headlines
+
+        Returns:
+            1-2 sentence market thesis in Traditional Chinese
+        """
+        # Format market data
+        market_text = "\n".join(
+            f"- {m.get('symbol', '')}: {m.get('change_pct', 0):+.2f}%"
+            for m in market_snapshot[:5]
+        )
+        events_text = "\n".join(f"- {e}" for e in top_events_summary[:5])
+
+        system_prompt = """你是專業的美股分析師，擅長用 1-2 句話精準概括今日市場主線。
+重要：必須使用繁體中文（台灣用語）。
+風格：簡潔、專業、有觀點，像晨會開場白。"""
+
+        prompt = f"""根據以下市場數據和重大事件，寫出今日市場主線（1-2 句話）：
+
+【市場表現】
+{market_text}
+
+【重大事件】
+{events_text}
+
+直接回覆主線句子，不要其他文字。例如：
+"科技股領漲，市場押注 AI 需求持續擴張；利率預期穩定，風險偏好回升。"
+"""
+
+        try:
+            response = self.generate(prompt, system_prompt, max_tokens=150)
+            # Remove quotes if present
+            result = response.strip().strip('"').strip("'")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to generate market thesis: {e}")
+            return "市場觀望氣氛濃厚，等待關鍵數據與財報。"
+
+    def generate_impact_card(
+        self,
+        headline: str,
+        what_happened: str,
+        related_tickers: list[str],
+    ) -> dict:
+        """Generate impact card for an event.
+
+        Args:
+            headline: Event headline
+            what_happened: Event description
+            related_tickers: Related stock tickers
+
+        Returns:
+            Dict with beneficiaries, losers, pricing_path, key_kpis
+        """
+        system_prompt = """你是專業的產業分析師，擅長分析事件的受益者/受害者和價格傳導。
+重要：必須使用繁體中文（台灣用語）。
+風格：簡潔精準，每項 1 句話內。"""
+
+        prompt = f"""針對以下事件，分析影響：
+
+【事件】{headline}
+【詳情】{what_happened}
+【相關股票】{', '.join(related_tickers[:5])}
+
+用 JSON 格式回覆：
+{{
+  "beneficiaries": "受益股及理由（1句）",
+  "losers": "受害股及理由（1句，若無則寫「暫無明顯受害者」）",
+  "pricing_path": "價格傳導路徑（如：成本上升→轉嫁終端→毛利壓縮）",
+  "key_kpis": "投資人應關注的 KPI（如：毛利率、ASP、訂單量）"
+}}
+
+只回覆 JSON。"""
+
+        try:
+            response = self.generate(prompt, system_prompt, max_tokens=300)
+            import json
+
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0]
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0]
+
+            return json.loads(response.strip())
+        except Exception as e:
+            logger.warning(f"Failed to generate impact card: {e}")
+            return {
+                "beneficiaries": "",
+                "losers": "",
+                "pricing_path": "",
+                "key_kpis": "",
+            }
+
+    def generate_quick_hits(
+        self,
+        news_items: list[dict],
+    ) -> list[dict]:
+        """Generate quick hits (one-liner summaries) from news.
+
+        Args:
+            news_items: List of news items with title, ticker, change
+
+        Returns:
+            List of quick hit dicts with summary, ticker, change
+        """
+        # Format news for prompt
+        news_text = "\n".join(
+            f"- [{item.get('ticker', 'N/A')}] {item.get('title', '')}"
+            for item in news_items[:20]
+        )
+
+        system_prompt = """你是財經快訊編輯，將英文新聞標題改寫成繁體中文一句話快訊。
+風格：簡潔、口語化、有資訊量。每則 15-25 字內。"""
+
+        prompt = f"""將以下新聞標題改寫成繁體中文快訊：
+
+{news_text}
+
+用 JSON 陣列格式回覆：
+[
+  {{"summary": "快訊內容", "ticker": "AAPL"}},
+  {{"summary": "快訊內容", "ticker": "NVDA"}}
+]
+
+只回覆 JSON 陣列。"""
+
+        try:
+            response = self.generate(prompt, system_prompt, max_tokens=1000)
+            import json
+
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0]
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0]
+
+            return json.loads(response.strip())
+        except Exception as e:
+            logger.warning(f"Failed to generate quick hits: {e}")
+            return []
+
     def generate_theme_analysis(
         self,
         theme: str,
@@ -223,6 +464,7 @@ class LLMClient:
         news_text = "\n".join(f"- {n}" for n in recent_news[:5])
 
         system_prompt = """你是一位專業的產業分析師，為台灣投資人撰寫產業趨勢分析。
+重要：所有回覆必須使用「繁體中文」（台灣用語），不可使用簡體中文。
 你的風格：
 - 宏觀視角，但能落地到個股
 - 解釋產業驅動因子

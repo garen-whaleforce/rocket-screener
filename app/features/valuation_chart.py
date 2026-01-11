@@ -54,6 +54,39 @@ def generate_valuation_chart_png(
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
         from matplotlib.table import Table
+        from matplotlib.font_manager import FontProperties, findfont
+        import matplotlib
+
+        # Find a Chinese font that exists on the system
+        chinese_fonts = [
+            'PingFang TC',      # macOS Traditional Chinese
+            'Heiti TC',         # macOS Traditional Chinese
+            'Arial Unicode MS', # macOS fallback
+            'Microsoft JhengHei',  # Windows Traditional Chinese
+            'Noto Sans CJK TC',    # Linux/Google Fonts
+            'WenQuanYi Zen Hei',   # Linux
+        ]
+
+        # Find first available font
+        font_prop = None
+        for font_name in chinese_fonts:
+            try:
+                fp = FontProperties(family=font_name)
+                font_path = findfont(fp, fallback_to_default=False)
+                if font_path and 'LastResort' not in font_path:
+                    font_prop = FontProperties(fname=font_path)
+                    logger.info(f"Using Chinese font: {font_name} ({font_path})")
+                    # Also set as default
+                    matplotlib.rcParams['font.sans-serif'] = [font_name] + matplotlib.rcParams['font.sans-serif']
+                    matplotlib.rcParams['axes.unicode_minus'] = False
+                    break
+            except Exception:
+                continue
+
+        if font_prop is None:
+            logger.warning("No Chinese font found, text may not render correctly")
+            font_prop = FontProperties()
+
     except ImportError:
         logger.warning("matplotlib not available, skipping chart generation")
         return None
@@ -69,6 +102,7 @@ def generate_valuation_chart_png(
             fontsize=16,
             fontweight='bold',
             y=0.95,
+            fontproperties=font_prop,
         )
 
         # Subtitle
@@ -78,25 +112,26 @@ def generate_valuation_chart_png(
             transform=ax.transAxes,
             fontsize=12,
             ha='center',
+            fontproperties=font_prop,
         )
 
-        # Create table data
+        # Create table data (use text instead of emoji for font compatibility)
         cell_text = [
             ["情境", "假設", "目標價", "潛在空間"],
             [
-                "🐻 Bear",
+                "悲觀 Bear",
                 data.bear_assumption[:30] + "..." if len(data.bear_assumption) > 30 else data.bear_assumption,
                 f"${data.bear_price:,.0f}",
                 f"{((data.bear_price / data.current_price) - 1) * 100:+.1f}%",
             ],
             [
-                "⚖️ Base",
+                "基準 Base",
                 data.base_assumption[:30] + "..." if len(data.base_assumption) > 30 else data.base_assumption,
                 f"${data.base_price:,.0f}",
                 f"{((data.base_price / data.current_price) - 1) * 100:+.1f}%",
             ],
             [
-                "🐂 Bull",
+                "樂觀 Bull",
                 data.bull_assumption[:30] + "..." if len(data.bull_assumption) > 30 else data.bull_assumption,
                 f"${data.bull_price:,.0f}",
                 f"{((data.bull_price / data.current_price) - 1) * 100:+.1f}%",
@@ -116,11 +151,15 @@ def generate_valuation_chart_png(
         table.set_fontsize(10)
         table.scale(1.2, 2)
 
+        # Set font for all cells
+        for key, cell in table.get_celld().items():
+            cell.set_text_props(fontproperties=font_prop)
+
         # Header styling
         for j in range(4):
             cell = table[(0, j)]
             cell.set_facecolor('#2c3e50')
-            cell.set_text_props(color='white', fontweight='bold')
+            cell.set_text_props(color='white', fontweight='bold', fontproperties=font_prop)
 
         # Row colors
         colors = ['#ffcdd2', '#fff9c4', '#c8e6c9']  # red, yellow, green
@@ -136,6 +175,7 @@ def generate_valuation_chart_png(
             fontsize=8,
             ha='center',
             color='gray',
+            fontproperties=font_prop,
         )
 
         # Add metrics if available
@@ -154,6 +194,7 @@ def generate_valuation_chart_png(
                 transform=ax.transAxes,
                 fontsize=9,
                 ha='center',
+                fontproperties=font_prop,
             )
 
         # Save
