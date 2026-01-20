@@ -814,7 +814,8 @@ def check_article2_v2(content: str) -> list[QAError]:
     # 3. Check 8Q financials (column headers)
     if "## 財務分析" in content or "財務分析（8 季趨勢）" in content:
         # Check for quarter labels in the table header
-        quarter_pattern = r"\| (Q[1-4]'?\d{2}|[1-4]Q\d{2}) \|"
+        # Match both formats: Q1, Q2, Q3... or Q1'24, Q2'24... or 1Q24...
+        quarter_pattern = r"\| (Q[1-8]'?\d{0,2}|[1-4]Q\d{2}) "
         quarter_matches = re.findall(quarter_pattern, content)
         unique_quarters = len(set(quarter_matches))
         if unique_quarters < V2_MIN_8Q_QUARTERS:
@@ -853,13 +854,16 @@ def check_article2_v2(content: str) -> list[QAError]:
 
     # 5. Check sensitivity matrix (5x5)
     if "估值敏感度表" in content:
-        sens_match = re.search(r"估值敏感度表\s*\n+(.+?)(?=\n\*當前位置|\n---)", content, re.DOTALL)
+        sens_match = re.search(r"估值敏感度表\s*\n+(.+?)(?=\n\*當前位置|\n---|\n##)", content, re.DOTALL)
         if sens_match:
             sens_section = sens_match.group(1)
             # Count EPS rows (rows starting with | $)
             eps_rows = len(re.findall(r"^\| \$[\d.]+", sens_section, re.MULTILINE))
-            # Check if header has 5 P/E columns
-            pe_cols = len(re.findall(r"\d+\.?\d*x", sens_section.split("\n")[0] if "\n" in sens_section else sens_section))
+            # Check if header has 5 P/E columns - look for the header row with "x"
+            header_lines = [line for line in sens_section.split("\n") if "x |" in line or "x|" in line]
+            pe_cols = 0
+            if header_lines:
+                pe_cols = len(re.findall(r"\d+\.?\d*x", header_lines[0]))
 
             if eps_rows < V2_SENSITIVITY_ROWS or pe_cols < V2_SENSITIVITY_COLS:
                 errors.append(
