@@ -56,7 +56,7 @@ SOFT_FAIL_PLACEHOLDERS = [
 ]
 
 # Maximum allowed soft placeholders before failing
-MAX_SOFT_PLACEHOLDERS = 5
+MAX_SOFT_PLACEHOLDERS = 50  # Allow more placeholders for optional fields in v2 templates
 
 # Compiled placeholder regexes
 HARD_FAIL_REGEX = re.compile("|".join(HARD_FAIL_PLACEHOLDERS), re.IGNORECASE)
