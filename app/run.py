@@ -328,7 +328,7 @@ def generate_article2_with_fmp(
     from app.features.hot_stock_scoring import score_hot_stocks
     from app.features.valuation_chart import generate_valuation_chart_from_evidence
     from app.ingest.fmp_client import FMPClient
-    from app.llm.writer import render_article2
+    from app.llm.writer import render_article2_v2
 
     logger.info("生成文章 2：熱門股深度分析...")
 
@@ -386,7 +386,7 @@ def generate_article2_with_fmp(
         logger.warning(f"估值圖生成失敗: {e}")
 
     # Render article
-    markdown = render_article2(evidence)
+    markdown = render_article2_v2(evidence)
 
     return ArticleContent(
         article_num=2,
@@ -409,7 +409,7 @@ def generate_article3_with_fmp(
     from app.evidence.build_article3 import build_article3_evidence, generate_supply_chain_chart_for_article3
     from app.features.theme_detection import detect_themes
     from app.ingest.fmp_client import FMPClient
-    from app.llm.writer import render_article3
+    from app.llm.writer import render_article3_v2
 
     logger.info("生成文章 3：產業主題趨勢...")
 
@@ -468,7 +468,7 @@ def generate_article3_with_fmp(
                 logger.warning(f"產業鏈圖上傳失敗: {e}")
 
     # Render article
-    markdown = render_article3(evidence)
+    markdown = render_article3_v2(evidence)
 
     return ArticleContent(
         article_num=3,
