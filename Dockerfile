@@ -5,11 +5,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System dependencies for matplotlib fonts
+# System dependencies for matplotlib fonts, cron, and SSL
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     fonts-dejavu-core \
-    && rm -rf /var/lib/apt/lists/*
+    cron \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
 # Copy requirements first for caching
 COPY requirements.txt .
