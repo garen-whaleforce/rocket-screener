@@ -467,12 +467,23 @@ class FMPClient:
         """Get stock peers/competitors.
 
         Uses: /stable/stock-peers?symbol=
+
+        Returns symbols of peer companies (extracts from full company info).
         """
         try:
             data = self._request("stock-peers", {"symbol": symbol})
-            if data and len(data) > 0:
-                return data[0].get("peersList", [])
-            return []
+            if not data:
+                return []
+
+            # FMP returns list of company info dicts with 'symbol' key
+            # Extract just the symbols, excluding the target symbol itself
+            peers = []
+            for item in data:
+                peer_symbol = item.get("symbol")
+                if peer_symbol and peer_symbol != symbol:
+                    peers.append(peer_symbol)
+
+            return peers[:10]  # Limit to 10 peers
         except Exception as e:
             logger.error(f"Failed to get peers for {symbol}: {e}")
             return []
