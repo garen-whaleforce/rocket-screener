@@ -797,24 +797,75 @@ def build_article2_evidence(
 
         logger.info(f"Built financials for {ticker}: {quarter_label}, YoY comparison available: {yoy_q is not None}")
 
-    # Build competitor info
+    # Build competitor info with v2 fields
     competitors = []
     if fmp_client and peers:
         for peer_ticker in peers[:4]:
             try:
                 peer_profile = fmp_client.get_company_profile(peer_ticker)
                 peer_ratios = fmp_client.get_financial_ratios(peer_ticker)
+                peer_metrics = fmp_client.get_key_metrics(peer_ticker)
+                peer_income = fmp_client.get_income_statement(peer_ticker, limit=5)
+
                 if peer_profile:
+                    # Calculate revenue growth (YoY) from income statements
+                    rev_growth = "--"
+                    if peer_income and len(peer_income) >= 5:
+                        curr_rev = peer_income[0].get("revenue", 0)
+                        yoy_rev = peer_income[4].get("revenue", 0)
+                        if yoy_rev and yoy_rev > 0:
+                            rev_growth = f"{((curr_rev / yoy_rev) - 1) * 100:+.1f}%"
+
+                    # Get gross margin from latest quarter
+                    gross_margin = None
+                    op_margin = None
+                    if peer_income and len(peer_income) > 0:
+                        latest_q = peer_income[0]
+                        revenue = latest_q.get("revenue", 0)
+                        gross_profit = latest_q.get("grossProfit", 0)
+                        op_income = latest_q.get("operatingIncome", 0)
+                        if revenue and revenue > 0:
+                            if gross_profit:
+                                gross_margin = f"{(gross_profit / revenue) * 100:.1f}%"
+                            if op_income:
+                                op_margin = f"{(op_income / revenue) * 100:.1f}%"
+
+                    # Get EV/Sales
+                    ev_sales = None
+                    if peer_metrics and peer_income:
+                        ev = peer_metrics.get("enterpriseValueTTM")
+                        ttm_revenue = sum(q.get("revenue", 0) for q in peer_income[:4]) if len(peer_income) >= 4 else None
+                        if ev and ttm_revenue and ttm_revenue > 0:
+                            ev_sales = ev / ttm_revenue
+
+                    # Simple moat assessment based on margins
+                    moat = "--"
+                    if gross_margin:
+                        gm_val = float(gross_margin.replace("%", ""))
+                        if gm_val > 60:
+                            moat = "品牌/IP"
+                        elif gm_val > 40:
+                            moat = "規模經濟"
+                        elif gm_val > 25:
+                            moat = "成本優勢"
+                        else:
+                            moat = "競爭激烈"
+
                     competitors.append(
                         CompetitorInfo(
                             ticker=peer_ticker,
                             name=peer_profile.get("companyName", peer_ticker),
                             market_cap=format_market_cap(peer_profile.get("mktCap", 0)),
                             pe_ratio=peer_ratios.get("peRatioTTM") if peer_ratios else None,
-                            revenue_growth="--",  # Would need historical data
+                            revenue_growth=rev_growth,
+                            gross_margin=gross_margin,
+                            op_margin=op_margin,
+                            ev_sales=ev_sales,
+                            moat=moat,
                         )
                     )
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to get competitor data for {peer_ticker}: {e}")
                 continue
 
     # Calculate valuation cases

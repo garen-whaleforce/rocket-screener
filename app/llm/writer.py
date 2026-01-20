@@ -266,6 +266,36 @@ def render_article2_v2(evidence: Article2Evidence) -> str:
     base_case = next((c for c in evidence.valuation_cases if c.scenario == "base"), None)
     bear_case = next((c for c in evidence.valuation_cases if c.scenario == "bear"), None)
 
+    # Transform key_metrics to template format (value/trend instead of current)
+    key_kpis_for_template = []
+    for kpi in evidence.key_metrics:
+        trend = "--"
+        if kpi.yoy_change:
+            trend = kpi.yoy_change
+        elif kpi.previous and kpi.current:
+            # Try to determine trend from current vs previous
+            trend = "穩定"
+        key_kpis_for_template.append({
+            "name": kpi.name,
+            "value": kpi.current,
+            "trend": trend,
+        })
+
+    # Transform competitors to template format (pe instead of pe_ratio, rev_growth instead of revenue_growth)
+    competitors_for_template = []
+    for comp in evidence.competitors:
+        competitors_for_template.append({
+            "name": comp.name,
+            "ticker": comp.ticker,
+            "market_cap": comp.market_cap,
+            "pe": f"{comp.pe_ratio:.1f}x" if comp.pe_ratio else "--",
+            "rev_growth": comp.revenue_growth or "--",
+            "gross_margin": comp.gross_margin or "--",
+            "op_margin": comp.op_margin or "--",
+            "ev_sales": f"{comp.ev_sales:.1f}x" if comp.ev_sales else "--",
+            "moat": comp.moat or "--",
+        })
+
     # Prepare template context
     context = {
         "date_display": date_display,
@@ -295,8 +325,8 @@ def render_article2_v2(evidence: Article2Evidence) -> str:
         "sector": evidence.sector,
         "industry": evidence.industry,
         "exchange": evidence.exchange,
-        # KPIs
-        "key_kpis": evidence.key_metrics,
+        # KPIs (transformed for template)
+        "key_kpis": key_kpis_for_template,
         # 8-quarter financials
         "q1_label": q_labels[0], "q2_label": q_labels[1], "q3_label": q_labels[2], "q4_label": q_labels[3],
         "q5_label": q_labels[4], "q6_label": q_labels[5], "q7_label": q_labels[6], "q8_label": q_labels[7],
@@ -331,8 +361,8 @@ def render_article2_v2(evidence: Article2Evidence) -> str:
         "price_change_3m": f"{evidence.price_change_3m:+.1f}%" if evidence.price_change_3m else "--",
         "pct_from_high": pct_from_high or "--",
         "pct_from_low": pct_from_low or "--",
-        # Competitors
-        "competitors": evidence.competitors,
+        # Competitors (transformed for template)
+        "competitors": competitors_for_template,
         # Valuation
         "pe_ttm": f"{evidence.pe_ratio:.1f}x" if evidence.pe_ratio else "--",
         "pe_5y_avg": f"{evidence.pe_5y_avg:.1f}x" if evidence.pe_5y_avg else "--",

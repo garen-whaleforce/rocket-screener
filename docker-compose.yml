@@ -15,6 +15,9 @@ services:
       - ./logs:/app/logs
     environment:
       - TZ=Asia/Taipei
+      - LITELLM_SSL_VERIFY=false
+      - MINIO_VERIFY_SSL=false
+      - TRANSCRIPT_SSL_VERIFY=false
     # For cron execution, use external cron or orchestrator
     # Default command runs once
     command: python -m app.run
@@ -29,14 +32,29 @@ services:
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs
+      - ./.env:/app/.env:ro
     environment:
       - TZ=Asia/Taipei
-    entrypoint: ["/bin/sh", "-c"]
+      - LITELLM_SSL_VERIFY=false
+      - MINIO_VERIFY_SSL=false
+      - TRANSCRIPT_SSL_VERIFY=false
+    entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        echo "0 8 * * 1-5 cd /app && python -m app.run >> /app/logs/cron.log 2>&1" > /etc/crontabs/root
-        echo "Cron scheduled: 08:00 Taiwan time (Mon-Fri)"
-        crond -f -l 2
+        # Fix timezone for cron daemon (must use /etc/localtime, not TZ env var)
+        ln -sf /usr/share/zoneinfo/Asia/Taipei /etc/localtime
+        echo "Asia/Taipei" > /etc/timezone
+        echo "Timezone set to: $(cat /etc/timezone)"
+        # Export env vars to cron environment (including SSL verify settings)
+        printenv | grep -E '^(GHOST|FMP|LITELLM|TRANSCRIPT|MINIO|SLACK|ALERT|TZ)' > /etc/environment
+        # Setup cron job for Debian (source env before running)
+        echo "0 8 * * 1-5 root . /etc/environment && cd /app && /usr/local/bin/python -m app.run --publish-live >> /app/logs/cron.log 2>&1" > /etc/cron.d/rocket-screener
+        chmod 0644 /etc/cron.d/rocket-screener
+        mkdir -p /app/logs
+        echo "Cron scheduled: 08:00 Taiwan time (Mon-Fri) with --publish-live"
+        echo "Environment variables exported to /etc/environment"
+        # Start cron in foreground
+        cron -f
     profiles:
       - cron  # Only starts with: docker-compose --profile cron up
 

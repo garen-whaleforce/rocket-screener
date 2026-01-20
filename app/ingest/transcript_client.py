@@ -10,15 +10,26 @@ API Endpoints:
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
 import requests
+import urllib3
 
 from app.config import TranscriptConfig
 
 logger = logging.getLogger(__name__)
+
+# Check SSL verification setting from environment
+_SSL_VERIFY_ENV = os.environ.get("TRANSCRIPT_SSL_VERIFY", "true").lower()
+_SSL_VERIFY = _SSL_VERIFY_ENV != "false"
+
+if not _SSL_VERIFY:
+    # Suppress SSL warnings when verification is disabled
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    logger.warning("SSL verification disabled for Transcript API")
 
 
 @dataclass
@@ -77,7 +88,13 @@ class TranscriptClient:
         if self.config.api_key:
             headers["X-API-Key"] = self.config.api_key
 
-        response = requests.get(url, params=params, headers=headers, timeout=60)
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=60,
+            verify=_SSL_VERIFY,  # Use SSL verification setting
+        )
         response.raise_for_status()
         return response.json()
 
